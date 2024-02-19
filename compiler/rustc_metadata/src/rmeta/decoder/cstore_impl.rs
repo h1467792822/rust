@@ -79,9 +79,10 @@ impl ProcessQueryValue<'_, Option<DeprecationEntry>> for Option<Deprecation> {
 }
 
 macro_rules! provide_one {
-    ($tcx:ident, $def_id:ident, $other:ident, $cdata:ident, $name:ident => { table }) => {
+    ($tcx:ident, $def_id:ident, $other:ident, $cdata:ident, $name:ident => { table $($compute: tt)* }) => {
         provide_one! {
             $tcx, $def_id, $other, $cdata, $name => {
+                $($compute)*
                 $cdata
                     .root
                     .tables
@@ -220,7 +221,7 @@ provide! { tcx, def_id, other, cdata,
     object_lifetime_default => { table }
     thir_abstract_const => { table }
     optimized_mir => { table }
-    mir_for_ctfe => { table }
+    mir_for_ctfe => { table println!("mir_for_ctfe: {:?}", tcx.opt_item_name(def_id)); }
     closure_saved_names_of_captured_variables => { table }
     mir_coroutine_witnesses => { table }
     promoted_mir => { table }
@@ -307,7 +308,9 @@ provide! { tcx, def_id, other, cdata,
     cross_crate_inlinable => { cdata.cross_crate_inlinable(def_id.index) }
 
     dylib_dependency_formats => { cdata.get_dylib_dependency_formats(tcx) }
-    is_private_dep => { cdata.private_dep }
+    is_private_dep => { cdata.private_dep.is_private() }
+    has_private_dep_warning => { cdata.private_dep.has_warning() }
+    warn_private_dep => { cdata.private_dep.warn() }
     is_panic_runtime => { cdata.root.panic_runtime }
     is_compiler_builtins => { cdata.root.compiler_builtins }
     has_global_allocator => { cdata.root.has_global_allocator }
@@ -369,12 +372,17 @@ provide! { tcx, def_id, other, cdata,
     debugger_visualizers => { cdata.get_debugger_visualizers() }
 
     exported_symbols => {
+
         let syms = cdata.exported_symbols(tcx);
 
         // FIXME rust-lang/rust#64319, rust-lang/rust#64872: We want
         // to block export of generics from dylibs, but we must fix
         // rust-lang/rust#65890 before we can do that robustly.
 
+        if !tcx.sess.opts.unstable_opts.export_private_dep_symbols && !cdata.private_dep.is_user_visible() {
+            println!("*** ignore exorted_symbols from {}", tcx.crate_name(cdata.cnum).as_str());
+            return &[];
+        }
         syms
     }
 
@@ -395,6 +403,8 @@ pub(in crate::rmeta) fn provide(providers: &mut Providers) {
         allocator_kind: |tcx, ()| CStore::from_tcx(tcx).allocator_kind(),
         alloc_error_handler_kind: |tcx, ()| CStore::from_tcx(tcx).alloc_error_handler_kind(),
         is_private_dep: |_tcx, LocalCrate| false,
+        has_private_dep_warning: |_tcx, LocalCrate| false,
+        warn_private_dep: |_tcx, LocalCrate| (),
         native_library: |tcx, id| {
             tcx.native_libraries(id.krate)
                 .iter()

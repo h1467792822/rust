@@ -403,13 +403,17 @@ impl<'a, 'tcx> CrateLoader<'a, 'tcx> {
         let crate_root = metadata.get_root();
         let host_hash = host_lib.as_ref().map(|lib| lib.metadata.get_root().hash());
 
+        // 以direct的为准
+        let private_dep = self.get_direct_dep(name.as_str()).or(private_dep).unwrap_or(false);
+        /*
         let private_dep = self
             .sess
             .opts
             .externs
             .get(name.as_str())
-            .map_or(private_dep.unwrap_or(false), |e| e.is_private_dep)
+            .map_or((private_dep.unwrap_or(false), false), |e| (e.is_private_dep && private_dep.unwrap_or(true), true))
             && private_dep.unwrap_or(true);
+        */
 
         // Claim this crate number and cache it
         let cnum = self.cstore.intern_stable_crate_id(&crate_root)?;
@@ -431,7 +435,9 @@ impl<'a, 'tcx> CrateLoader<'a, 'tcx> {
             &crate_paths
         };
 
-        let cnum_map = self.resolve_crate_deps(root, &crate_root, &metadata, cnum, dep_kind)?;
+        // private_dep需要参考本crate
+        let cnum_map =
+            self.resolve_crate_deps(root, &crate_root, &metadata, cnum, dep_kind, private_dep)?;
 
         let raw_proc_macros = if crate_root.is_proc_macro_crate() {
             let temp_root;
@@ -533,14 +539,15 @@ impl<'a, 'tcx> CrateLoader<'a, 'tcx> {
         dep_kind: CrateDepKind,
     ) -> Option<CrateNum> {
         self.used_extern_options.insert(name);
-        match self.maybe_resolve_crate(name, dep_kind, None) {
+        match self.maybe_resolve_crate(name, dep_kind, None, false) {
             Ok(cnum) => {
                 self.cstore.set_used_recursively(cnum);
                 Some(cnum)
             }
             Err(err) => {
-                let missing_core =
-                    self.maybe_resolve_crate(sym::core, CrateDepKind::Explicit, None).is_err();
+                let missing_core = self
+                    .maybe_resolve_crate(sym::core, CrateDepKind::Explicit, None, false)
+                    .is_err();
                 err.report(self.sess, span, missing_core);
                 None
             }
@@ -552,6 +559,7 @@ impl<'a, 'tcx> CrateLoader<'a, 'tcx> {
         name: Symbol,
         mut dep_kind: CrateDepKind,
         dep: Option<(&'b CratePaths, &'b CrateDep)>,
+        dependency_of_private_dep: bool,
     ) -> Result<CrateNum, CrateError> {
         info!("resolving crate `{}`", name);
         if !name.as_str().is_ascii() {
@@ -564,7 +572,7 @@ impl<'a, 'tcx> CrateLoader<'a, 'tcx> {
                 dep.host_hash,
                 Some(&dep.extra_filename[..]),
                 PathKind::Dependency,
-                Some(dep.is_private),
+                Some(dep.is_private && dependency_of_private_dep),
             ),
             None => (None, None, None, None, PathKind::Crate, None),
         };
@@ -599,12 +607,16 @@ impl<'a, 'tcx> CrateLoader<'a, 'tcx> {
 
         match result {
             (LoadResult::Previous(cnum), None) => {
+                let not_direct = self.get_direct_dep(name.as_str()).is_none();
                 let data = self.cstore.get_crate_data_mut(cnum);
                 if data.is_proc_macro_crate() {
                     dep_kind = CrateDepKind::MacrosOnly;
                 }
                 data.set_dep_kind(cmp::max(data.dep_kind(), dep_kind));
-                if let Some(private_dep) = private_dep {
+                // 只更新非direct依赖的crate
+                if let Some(private_dep) = private_dep
+                    && not_direct
+                {
                     data.update_and_private_dep(private_dep);
                 }
                 Ok(cnum)
@@ -614,6 +626,10 @@ impl<'a, 'tcx> CrateLoader<'a, 'tcx> {
             }
             _ => panic!(),
         }
+    }
+
+    fn get_direct_dep(&self, crate_name: &str) -> Option<bool> {
+        self.tcx.sess.opts.externs.get(crate_name).map(|e| e.is_private_dep)
     }
 
     fn load(&self, locator: &mut CrateLocator<'_>) -> Result<Option<LoadResult>, CrateError> {
@@ -658,6 +674,7 @@ impl<'a, 'tcx> CrateLoader<'a, 'tcx> {
         metadata: &MetadataBlob,
         krate: CrateNum,
         dep_kind: CrateDepKind,
+        dependency_of_private_dep: bool,
     ) -> Result<CrateNumMap, CrateError> {
         debug!("resolving deps of external crate");
         if crate_root.is_proc_macro_crate() {
@@ -670,6 +687,7 @@ impl<'a, 'tcx> CrateLoader<'a, 'tcx> {
         let deps = crate_root.decode_crate_deps(metadata);
         let mut crate_num_map = CrateNumMap::with_capacity(1 + deps.len());
         crate_num_map.push(krate);
+        let mut old_cnum = 1;
         for dep in deps {
             info!(
                 "resolving dep crate {} hash: `{}` extra filename: `{}`",
@@ -679,7 +697,23 @@ impl<'a, 'tcx> CrateLoader<'a, 'tcx> {
                 CrateDepKind::MacrosOnly => CrateDepKind::MacrosOnly,
                 _ => dep.kind,
             };
-            let cnum = self.maybe_resolve_crate(dep.name, dep_kind, Some((root, &dep)))?;
+            let cnum = self.maybe_resolve_crate(
+                dep.name,
+                dep_kind,
+                Some((root, &dep)),
+                dependency_of_private_dep,
+            )?;
+            if old_cnum < dep.cnum {
+                println!(
+                    "**** skip private-crate: {old_cnum}..{}, dependency_of {} {:?}",
+                    dep.cnum, krate, dep.name
+                );
+            }
+            for n in old_cnum..dep.cnum {
+                println!("### push private-crate, before {} {}, {n} ", dep.cnum, dep.name);
+                crate_num_map.push(CrateNum::new(usize::MAX));
+            }
+            old_cnum = dep.cnum + 1;
             crate_num_map.push(cnum);
         }
 
@@ -1068,7 +1102,7 @@ impl<'a, 'tcx> CrateLoader<'a, 'tcx> {
     }
 
     pub fn maybe_process_path_extern(&mut self, name: Symbol) -> Option<CrateNum> {
-        self.maybe_resolve_crate(name, CrateDepKind::Explicit, None).ok()
+        self.maybe_resolve_crate(name, CrateDepKind::Explicit, None, false).ok()
     }
 
     pub fn unload_unused_crates(&mut self) {

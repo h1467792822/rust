@@ -2053,8 +2053,13 @@ impl<'tcx> InferCtxtPrivExt<'tcx> for TypeErrCtxt<'_, 'tcx> {
             .filter_map(|def_id| {
                 let imp = self.tcx.impl_trait_header(def_id).unwrap().skip_binder();
                 if imp.polarity == ty::ImplPolarity::Negative
-                    || !self.tcx.is_user_visible_dep(def_id.krate)
+                    || !self.tcx.is_user_visible_dep(def_id.krate, "find candidates")
                 {
+                    println!(
+                        "---- find candiates: {}::{:?}",
+                        self.tcx.crate_name(def_id.krate).as_str(),
+                        self.tcx.opt_item_name(def_id)
+                    );
                     return None;
                 }
                 let imp = imp.trait_ref;

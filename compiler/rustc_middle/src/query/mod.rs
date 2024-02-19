@@ -1844,6 +1844,17 @@ rustc_queries! {
         desc { "checking whether crate `{}` is a private dependency", c }
         separate_provide_extern
     }
+    query has_private_dep_warning(c: CrateNum) -> bool {
+        eval_always
+        desc { "checking whether crate `{}` has private dependency warning", c }
+        separate_provide_extern
+    }
+    query warn_private_dep(c: CrateNum) -> () {
+        eval_always
+        desc { "notify crate `{}` has private dependency warning", c }
+        separate_provide_extern
+    }
+
     query allocator_kind(_: ()) -> Option<AllocatorKind> {
         eval_always
         desc { "getting the allocator kind for the current crate" }

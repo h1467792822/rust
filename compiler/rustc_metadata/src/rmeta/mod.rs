@@ -257,7 +257,7 @@ pub(crate) struct CrateRoot {
     has_default_lib_allocator: bool,
 
     crate_deps: LazyArray<CrateDep>,
-    dylib_dependency_formats: LazyArray<Option<LinkagePreference>>,
+    dylib_dependency_formats: LazyArray<Option<(usize, LinkagePreference)>>,
     lib_features: LazyArray<(Symbol, FeatureStability)>,
     stability_implications: LazyArray<(Symbol, Symbol)>,
     lang_items: LazyArray<(DefIndex, LangItem)>,
@@ -330,6 +330,7 @@ pub(crate) struct CrateDep {
     pub kind: CrateDepKind,
     pub extra_filename: String,
     pub is_private: bool,
+    pub cnum: usize,
 }
 
 #[derive(MetadataEncodable, MetadataDecodable)]

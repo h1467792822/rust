@@ -1618,6 +1618,8 @@ options! {
         "emit the bc module with thin LTO info (default: yes)"),
     export_executable_symbols: bool = (false, parse_bool, [TRACKED],
         "export symbols from executables, as if they were dynamic libraries"),
+    export_private_dep_symbols: bool = (true, parse_bool, [TRACKED],
+        "export symbols from private-dep crates"),
     extra_const_ub_checks: bool = (false, parse_bool, [TRACKED],
         "turns on more checks to detect const UB, which can be slow (default: no)"),
     #[rustc_lint_opt_deny_field_access("use `Session::fewer_names` instead of this field")]

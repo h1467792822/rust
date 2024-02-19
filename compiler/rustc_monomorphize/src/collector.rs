@@ -1036,7 +1036,16 @@ fn should_codegen_locally<'tcx>(tcx: TyCtxt<'tcx>, instance: &Instance<'tcx>) ->
         return false;
     }
 
+    if !tcx.sess.opts.unstable_opts.export_private_dep_symbols
+        && !is_inline_or_generic(instance, tcx)
+        && !tcx.is_user_visible_dep(def_id.krate, "codegen_locally")
+    {
+        println!("don't codegen locally: {}::{:?}", tcx.crate_name(def_id.krate).as_str(), tcx.opt_item_name(def_id));
+        return false;
+    }
+
     if !tcx.is_mir_available(def_id) {
+        println!("is_mir_available: false: {:?}", tcx.opt_item_name(def_id));
         tcx.dcx().emit_fatal(NoOptimizedMir {
             span: tcx.def_span(def_id),
             crate_name: tcx.crate_name(def_id.krate),
@@ -1519,4 +1528,9 @@ fn collect_const_value<'tcx>(
         }
         _ => {}
     }
+}
+
+fn is_inline_or_generic<'tcx>(instance: &Instance<'tcx>, tcx: TyCtxt<'tcx>) -> bool {
+    instance.args.non_erasable_generics(tcx, instance.def_id()).next().is_some() ||
+        tcx.cross_crate_inlinable(instance.def_id())
 }

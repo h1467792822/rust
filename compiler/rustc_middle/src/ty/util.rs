@@ -799,18 +799,26 @@ impl<'tcx> TyCtxt<'tcx> {
     ///
     /// [public]: TyCtxt::is_private_dep
     /// [direct]: rustc_session::cstore::ExternCrate::is_direct
-    pub fn is_user_visible_dep(self, key: CrateNum) -> bool {
+    pub fn is_user_visible_dep(self, key: CrateNum, _msg: &str) -> bool {
         // | Private | Direct | Visible |                    |
         // |---------|--------|---------|--------------------|
         // | Yes     | Yes    | Yes     | !true || true   |
         // | No      | Yes    | Yes     | !false || true  |
         // | Yes     | No     | No      | !true || false  |
         // | No      | No     | Yes     | !false || false |
+
+        let ret = !self.is_private_dep(key) || self.has_private_dep_warning(key);
+        if !ret {
+            //println!("not user visible crate: {}, msg: {msg}", self.crate_name(key).as_str());
+        }
+        ret
+        /*
         !self.is_private_dep(key)
             // If `extern_crate` is `None`, then the crate was injected (e.g., by the allocator).
             // Treat that kind of crate as "indirect", since it's an implementation detail of
             // the language.
             || self.extern_crate(key.as_def_id()).is_some_and(|e| e.is_direct())
+        */
     }
 
     /// Whether the item has a host effect param. This is different from `TyCtxt::is_const`,

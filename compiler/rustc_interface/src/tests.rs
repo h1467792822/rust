@@ -754,6 +754,7 @@ fn test_unstable_options_tracking_hash() {
     tracked!(dwarf_version, Some(5));
     tracked!(emit_thin_lto, false);
     tracked!(export_executable_symbols, true);
+    tracked!(export_private_dep_symbols, false);
     tracked!(fewer_names, Some(true));
     tracked!(flatten_format_args, false);
     tracked!(force_unstable_if_unmarked, true);

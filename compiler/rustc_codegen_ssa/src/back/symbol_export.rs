@@ -322,6 +322,10 @@ fn exported_symbols_provider_local(
         // The symbols created in this loop are sorted below it
         #[allow(rustc::potential_query_instability)]
         for (mono_item, data) in cgus.iter().flat_map(|cgu| cgu.items().iter()) {
+            if !tcx.sess.opts.unstable_opts.export_private_dep_symbols && !tcx.is_user_visible_dep(mono_item.krate(), "mono export") {
+                continue;
+            }
+
             if data.linkage != Linkage::External {
                 // We can only re-use things with external linkage, otherwise
                 // we'll get a linker error

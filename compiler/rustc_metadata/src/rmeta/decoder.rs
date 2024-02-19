@@ -31,6 +31,7 @@ use rustc_span::{BytePos, Pos, SpanData, SpanDecoder, SyntaxContext, DUMMY_SP};
 use proc_macro::bridge::client::ProcMacro;
 use std::iter::TrustedLen;
 use std::path::Path;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::{io, iter, mem};
 
 pub(super) use cstore_impl::provide;
@@ -58,6 +59,34 @@ impl std::ops::Deref for MetadataBlob {
 /// crate may refer to types in other external crates, and each has their
 /// own crate numbers.
 pub(crate) type CrateNumMap = IndexVec<CrateNum, CrateNum>;
+
+pub(crate) struct PrivateDep {
+    is_private: bool,
+    has_warning: AtomicBool,
+}
+
+impl PrivateDep {
+    pub(crate) fn new(is_private: bool) -> Self {
+        Self { is_private, has_warning: AtomicBool::new(false) }
+    }
+    pub(crate) fn is_private(&self) -> bool {
+        self.is_private
+    }
+    pub(crate) fn has_warning(&self) -> bool {
+        self.is_private() && self.has_warning.load(Ordering::Relaxed)
+    }
+    pub(crate) fn is_user_visible(&self) -> bool {
+        !self.is_private() || self.has_warning()
+    }
+    pub(crate) fn warn(&self) {
+        if self.is_private() {
+            self.has_warning.store(true, Ordering::Relaxed);
+        }
+    }
+    pub(crate) fn update(&mut self, is_private: bool) {
+        self.is_private &= is_private;
+    }
+}
 
 pub(crate) struct CrateMetadata {
     /// The primary crate data - binary metadata blob.
@@ -103,7 +132,7 @@ pub(crate) struct CrateMetadata {
     /// Whether or not this crate should be consider a private dependency.
     /// Used by the 'exported_private_dependencies' lint, and for determining
     /// whether to emit suggestions that reference this crate.
-    private_dep: bool,
+    private_dep: PrivateDep,
     /// The hash for the host proc macro. Used to support `-Z dual-proc-macro`.
     host_hash: Option<Svh>,
     /// The crate was used non-speculatively.
@@ -764,8 +793,15 @@ impl MetadataBlob {
                     let dylib_dependency_formats =
                         root.dylib_dependency_formats.decode(self).collect::<Vec<_>>();
                     for (i, dep) in root.crate_deps.decode(self).enumerate() {
-                        let CrateDep { name, extra_filename, hash, host_hash, kind, is_private } =
-                            dep;
+                        let CrateDep {
+                            name,
+                            extra_filename,
+                            hash,
+                            host_hash,
+                            kind,
+                            is_private,
+                            ..
+                        } = dep;
                         let number = i + 1;
 
                         writeln!(
@@ -979,6 +1015,10 @@ impl<'a, 'tcx> CrateMetadataRef<'a> {
 
     #[inline]
     pub(super) fn map_encoded_cnum_to_current(self, cnum: CrateNum) -> CrateNum {
+        if cnum.as_usize() >= self.cnum_map.len() {
+            println!("error crate: {}", cnum.as_usize());
+            //return self.cnum;
+        }
         if cnum == LOCAL_CRATE { self.cnum } else { self.cnum_map[cnum] }
     }
 
@@ -1438,10 +1478,11 @@ impl<'a, 'tcx> CrateMetadataRef<'a> {
         tcx: TyCtxt<'tcx>,
     ) -> &'tcx [(CrateNum, LinkagePreference)] {
         tcx.arena.alloc_from_iter(
-            self.root.dylib_dependency_formats.decode(self).enumerate().flat_map(|(i, link)| {
-                let cnum = CrateNum::new(i + 1);
-                link.map(|link| (self.cnum_map[cnum], link))
-            }),
+            self.root.dylib_dependency_formats.decode(self).flat_map(
+                |link| {
+                    link.map(|(cnum, link)| (self.cnum_map[CrateNum::new(cnum)], link))
+                },
+            ),
         )
     }
 
@@ -1814,7 +1855,7 @@ impl CrateMetadata {
             dependencies,
             dep_kind,
             source: Lrc::new(source),
-            private_dep,
+            private_dep: PrivateDep::new(private_dep),
             host_hash,
             used: false,
             extern_crate: None,
@@ -1863,7 +1904,7 @@ impl CrateMetadata {
     }
 
     pub(crate) fn update_and_private_dep(&mut self, private_dep: bool) {
-        self.private_dep &= private_dep;
+        self.private_dep.update(private_dep);
     }
 
     pub(crate) fn used(&self) -> bool {

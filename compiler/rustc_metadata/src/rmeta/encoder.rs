@@ -1573,8 +1573,18 @@ impl<'a, 'tcx> EncodeContext<'a, 'tcx> {
                 module_children.iter().filter(|child| child.reexport_chain.is_empty())
                     .map(|child| child.res.def_id().index));
 
-            record_defaulted_array!(self.tables.module_children_reexports[def_id] <-
-                module_children.iter().filter(|child| !child.reexport_chain.is_empty()));
+            if tcx.sess.opts.unstable_opts.export_private_dep_symbols {
+                record_defaulted_array!(self.tables.module_children_reexports[def_id] <-
+                    module_children.iter().filter(|child| !child.reexport_chain.is_empty()));
+            } else {
+                record_defaulted_array!(self.tables.module_children_reexports[def_id] <-
+                module_children.iter().filter(|child| {
+                    if let Some(def_id) = child.res.opt_def_id() && !tcx.is_user_visible_dep(def_id.krate, "reexports") {
+                        return false;
+                    }
+                    !child.reexport_chain.is_empty()
+                }));
+            }
         }
     }
 
@@ -1881,7 +1891,16 @@ impl<'a, 'tcx> EncodeContext<'a, 'tcx> {
             .tcx
             .crates(())
             .iter()
-            .map(|&cnum| {
+            .filter_map(|&cnum| {
+                if !self.tcx.sess.opts.unstable_opts.export_private_dep_symbols
+                    && !self.tcx.is_user_visible_dep(cnum, "crate_deps")
+                {
+                    println!(
+                        "*** encode_crate_deps, ignore: {}",
+                        self.tcx.crate_name(cnum).as_str()
+                    );
+                    return None;
+                }
                 let dep = CrateDep {
                     name: self.tcx.crate_name(cnum),
                     hash: self.tcx.crate_hash(cnum),
@@ -1889,11 +1908,13 @@ impl<'a, 'tcx> EncodeContext<'a, 'tcx> {
                     kind: self.tcx.dep_kind(cnum),
                     extra_filename: self.tcx.extra_filename(cnum).clone(),
                     is_private: self.tcx.is_private_dep(cnum),
+                    cnum: cnum.as_usize(),
                 };
-                (cnum, dep)
+                Some((cnum, dep))
             })
             .collect::<Vec<_>>();
 
+        /*
         {
             // Sanity-check the crate numbers
             let mut expected_cnum = 1;
@@ -1902,6 +1923,7 @@ impl<'a, 'tcx> EncodeContext<'a, 'tcx> {
                 expected_cnum += 1;
             }
         }
+        */
 
         // We're just going to write a list of crate 'name-hash-version's, with
         // the assumption that they are numbered 1 to n.
@@ -2080,19 +2102,35 @@ impl<'a, 'tcx> EncodeContext<'a, 'tcx> {
         )
     }
 
-    fn encode_dylib_dependency_formats(&mut self) -> LazyArray<Option<LinkagePreference>> {
+    fn encode_dylib_dependency_formats(&mut self) -> LazyArray<Option<(usize, LinkagePreference)>> {
         empty_proc_macro!(self);
         let formats = self.tcx.dependency_formats(());
         for (ty, arr) in formats.iter() {
             if *ty != CrateType::Dylib {
                 continue;
             }
-            return self.lazy_array(arr.iter().map(|slot| match *slot {
-                Linkage::NotLinked | Linkage::IncludedFromDylib => None,
+            let deps = arr
+                .iter()
+                .enumerate()
+                .map(|(n, slot)| {
+                    if !self.tcx.sess.opts.unstable_opts.export_private_dep_symbols
+                        && !self.tcx.is_user_visible_dep(CrateNum::new(n + 1), "dylib_dependency")
+                    {
+                        println!(
+                            "*** encode_dylib_dependency_formats, ignore: {}",
+                            self.tcx.crate_name(CrateNum::new(n + 1)).as_str()
+                        );
+                        return None;
+                    }
+                    match *slot {
+                        Linkage::NotLinked | Linkage::IncludedFromDylib => None,
 
-                Linkage::Dynamic => Some(LinkagePreference::RequireDynamic),
-                Linkage::Static => Some(LinkagePreference::RequireStatic),
-            }));
+                        Linkage::Dynamic => Some((n + 1, LinkagePreference::RequireDynamic)),
+                        Linkage::Static => Some((n + 1, LinkagePreference::RequireStatic)),
+                    }
+                })
+                .collect::<Vec<_>>();
+            return self.lazy_array(deps);
         }
         LazyArray::default()
     }

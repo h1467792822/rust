@@ -1400,7 +1400,9 @@ impl SearchInterfaceForPrivateItemsVisitor<'_> {
     /// 2. It comes from a private crate
     fn leaks_private_dep(&self, item_id: DefId) -> bool {
         let ret = self.required_visibility.is_public() && self.tcx.is_private_dep(item_id.krate);
-
+        if ret {
+            let _ = self.tcx.warn_private_dep(item_id.krate);
+        }
         debug!("leaks_private_dep(item_id={:?})={}", item_id, ret);
         ret
     }
@@ -1497,6 +1499,35 @@ impl<'tcx> PrivateItemsInPublicInterfacesChecker<'tcx, '_> {
         self.effective_visibilities.effective_vis(def_id).copied()
     }
 
+    fn check_export_priv_dep(&mut self, id: ItemId) {
+        let tcx = self.tcx;
+        let def_id = id.owner_id.def_id;
+        let item_visibility = tcx.local_visibility(def_id);
+        let effective_vis = self.get(def_id);
+        let def_kind = tcx.def_kind(def_id);
+
+        match def_kind {
+            DefKind::ExternCrate => {
+                if let Some(cnum) = self.tcx.resolutions(()).extern_crate_map.get(&def_id) {
+                    //println!("{item_visibility:?} {effective_vis:?}");
+                    self.check(def_id, item_visibility, effective_vis).check_def_id(cnum.as_def_id(), "extern crate", &tcx.crate_name(*cnum).as_str());
+                }
+            }
+            DefKind::Use => {
+                if let hir::ItemKind::Use(hir::UsePath{res, ..}, _) = tcx.hir().item(id).kind {
+                    for res in res.iter() {
+                        if let Res::Def(_kink, id) = res && !id.is_local() &&
+                            !self.check(def_id, item_visibility, effective_vis).check_def_id(*id, "use", &tcx.item_name(*id).as_str()) {
+                                //println!("{item_visibility:?} {effective_vis:?}");
+                                break;
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
     pub fn check_item(&mut self, id: ItemId) {
         let tcx = self.tcx;
         let def_id = id.owner_id.def_id;
@@ -1508,6 +1539,11 @@ impl<'tcx> PrivateItemsInPublicInterfacesChecker<'tcx, '_> {
             DefKind::Const | DefKind::Static(_) | DefKind::Fn | DefKind::TyAlias => {
                 if let DefKind::TyAlias = def_kind {
                     self.check_unnameable(def_id, effective_vis);
+                }
+                if let DefKind::Fn = def_kind {
+                    let def_id = def_id.to_def_id();
+                    let instance = ty::Instance::new(def_id, ty::List::identity_for_item(tcx, def_id));
+                    println!("*** fn {:?} inline = {} cross inline = {}", tcx.opt_item_name(def_id), instance.def.generates_cgu_internal_copy(tcx), tcx.cross_crate_inlinable(def_id));
                 }
                 self.check(def_id, item_visibility, effective_vis).generics().predicates().ty();
             }
@@ -1762,8 +1798,12 @@ fn check_private_in_public(tcx: TyCtxt<'_>, (): ()) {
     let effective_visibilities = tcx.effective_visibilities(());
     // Check for private types in public interfaces.
     let mut checker = PrivateItemsInPublicInterfacesChecker { tcx, effective_visibilities };
+    let export_priv_dep = tcx.sess.opts.unstable_opts.export_private_dep_symbols;
 
     for id in tcx.hir().items() {
         checker.check_item(id);
+        if !export_priv_dep {
+            checker.check_export_priv_dep(id);
+        }
     }
 }
